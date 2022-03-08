@@ -1,0 +1,6 @@
+{
+  "files.associations": {
+    "*.as": "javascript",
+    "gcrypt.h": "c"
+  }
+}

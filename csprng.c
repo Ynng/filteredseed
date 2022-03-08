@@ -3,12 +3,46 @@
 #include <stdlib.h>
 #include <gcrypt.h>
 #define MAXBUFLEN 60000
-#define VERSION 16 //id for the validation
-#define FILTER_TYPE 4// 0=> RSG overworld (Practice Seeds); 1=> village only; 2=> shipwreck only; 3 => jungle only; 4 => coinflip (classic); 5=> whatever I want; 6 => loot testing
+#define VERSION 324 //id for the validation
+#define FILTER_TYPE 0// 0=> RSG overworld (Practice Seeds); 1=> village only; 2=> shipwreck only; 3 => jungle only; 4 => coinflip (classic); 5=> whatever I want; 6 => loot testing
 #define DEBUG 0
+#define BIOMES 4
 #include <string.h>
 #include <time.h>
 #include "./minecraft_nether_gen_rs.h"
+
+uint64_t* lookup;
+int ybybiome[BIOMES + 1];
+const int chestys[13] ={2, 2, 3, 3, 3, 1, 1, 4, 1, 1, 3, 1, 2};
+
+int fetchIndex(int pt, int mr, int rot, int cx, int cz){
+  return pt*800 + mr*400 + rot*100 + cx*10 + cz;
+}
+
+int biomeIndex(int biome){
+  if (biome % 128 == plains){
+    return 0;
+  }
+  if (biome == savanna){
+    return 1;
+  }
+  if (biome == forest){
+    return 2;
+  }
+  if (biome == snowy_tundra){
+    return 3;
+  }
+  return BIOMES;
+}
+
+int allChecked(void){
+  int i;
+  int result = 0xffffffff;
+  for(i=0; i < BIOMES; i++){
+    result &= ybybiome[i];
+  }
+  return result != 0;
+}
 
 void int64ToChar(unsigned char a[], int64_t n) {
   a[0] = (n >> 56) & 0xFF;
@@ -110,7 +144,17 @@ char netherchecker(int64_t seed, int* fortressQuadrant){
   int64_t chunkz = next(&fakeseed, 31) % 23;
   int structureType = (next(&fakeseed, 31) % 5)  >= 2;
   bastionCount += structureType;
-  if (chunkx > 8 || chunkz > 8 || structureType == 0){
+  if (chunkx > 6 || chunkz > 7 || structureType == 0){
+    return 0;
+  }
+  int64_t cseed, carvea, carveb;
+  cseed = (seed) ^ 0x5deece66dL;
+  carvea = nextLong(&cseed);
+  carveb = nextLong(&cseed);
+  fakeseed = ((chunkx * carvea) ^ (chunkz * carveb) ^ seed) ^ 0x5deece66dL;
+  fakeseed = fakeseed & 0xFFFFFFFFFFFF;
+  int btype = nextInt(&fakeseed, 4);
+  if (btype > 1){
     return 0;
   }
   int gotfort = 0;
@@ -240,7 +284,7 @@ int villageLocation(int64_t lower48){
   const StructureConfig sconf = VILLAGE_CONFIG;
   int valid;
   Pos p = getStructurePos(sconf, lower48, 0, 0, &valid);
-  if (!valid || (p.x < 96 && p.z < 96) || p.x > 144 || p.z > 144 ){
+  if (!valid || p.x >= 112 || p.z >= 96 ){
     return 0;
   }
   return 1;
@@ -289,7 +333,7 @@ int portalLocation(int64_t seed, int villageMode, int* px, int* pz){
   int valid2;
   Pos p2 = getStructurePos(sconf_portal, seed, 0, 0, &valid2);
   if (villageMode == 1){
-    if (!valid2 || p2.x >= 96 || p2.z >= 96){// || p2.x >= 144 || p2.z >= 144){
+    if (!valid2 || p2.x >= 64 || p2.z >= 96){// || p2.x >= 144 || p2.z >= 144){
       return 0;
     }
     *px = p2.x;
@@ -310,16 +354,10 @@ int portalBiome(int64_t seed, LayerStack* gp){
   Pos p = getStructurePos(sconf, seed, 0, 0, &valid);
   int mc = MC_1_16;
   int biome = getBiomeAtPos(gp, p);
-  if (isOceanic(biome)){
-    return 0;
+  if (biome % 128 == plains || biome == savanna || biome == forest || biome == snowy_tundra){
+    return biome;
   }
-  if (biome == desert || biome == snowy_tundra){
-    return 0;
-  }
-  if (!isViableStructurePos(sconf.structType, mc, gp, seed, p.x, p.z)){
-    return 0;
-  }
-  return 1;
+  return -2;
 }
 
 //there are 3 biome classes to handle when filtering ruined_portal TYPE
@@ -359,6 +397,44 @@ int portalTypeOcean(int64_t seed){
   //IF the world demands portal Type filtering for the ocean/desert worlds I would do it here
 }
 
+int portalTypeNormal2(int64_t seed, uint64_t* packed){
+  const StructureConfig sconf_portal = RUINED_PORTAL_CONFIG;
+  int valid2, portalType;
+  Pos p2 = getStructurePos(sconf_portal, seed, 0, 0, &valid2);
+  int portcx, portcz, portOceanType, portNormalY, portNormalType;
+  float buriedFloat, bigOrSmall;
+  int rawPortalType;
+  int64_t fakeseed, carvea, carveb;
+  portcx = p2.x >> 4;
+  portcz = p2.z >> 4;
+  fakeseed = (seed) ^ 0x5deece66dL;
+  carvea = nextLong(&fakeseed);
+  carveb = nextLong(&fakeseed);
+  fakeseed = ((portcx * carvea) ^ (portcz * carveb) ^ seed) ^ 0x5deece66dL;
+  fakeseed = fakeseed & 0xFFFFFFFFFFFF;
+  buriedFloat = nextFloat(&fakeseed); // 50/50 shot at being underground
+  next(&fakeseed, 31); //tossed out for normal terrains (air gaps)
+  bigOrSmall = nextFloat(&fakeseed); // 1/20 chance of being big
+  rawPortalType = next(&fakeseed, 31); //once this is reduced mod 3 or 10 we know the type
+  if (buriedFloat < .5){
+    return -1;
+  }
+  if (bigOrSmall < .05){
+    portalType =  10 + (rawPortalType % 3);//all three big ones have enough lava and we're not underground
+  } else {
+    portalType = rawPortalType % 10;
+  }
+  int rotv = nextInt(&fakeseed, 4);
+  float mirv = nextFloat(&fakeseed);
+  int mirb = (mirv < .5);
+  *packed = lookup[fetchIndex(portalType, mirb, rotv, portcx, portcz)];
+  return portalType;
+  if (portalType == 0 || portalType == 2 || portalType == 3 || portalType == 4 || portalType == 5 || portalType == 8){
+    return 0; //6 small types have no lava
+  }
+  return 1; //this seed made it
+}
+
 int portalTypeNormal(int64_t seed){
   const StructureConfig sconf_portal = RUINED_PORTAL_CONFIG;
   int valid2, portalType;
@@ -379,12 +455,17 @@ int portalTypeNormal(int64_t seed){
   bigOrSmall = nextFloat(&fakeseed); // 1/20 chance of being big
   rawPortalType = next(&fakeseed, 31); //once this is reduced mod 3 or 10 we know the type
   if (buriedFloat < .5){
-    return 0;
+    return -1;
   }
   if (bigOrSmall < .05){
-    return 1; //all three big ones have enough lava and we're not underground
+    portalType =  10 + (rawPortalType % 3);//all three big ones have enough lava and we're not underground
+  } else {
+    portalType = rawPortalType % 10;
   }
-  portalType = rawPortalType % 10;
+  int rotv = nextInt(&fakeseed, 4);
+  float mirv = nextFloat(&fakeseed);
+  int mirb = (mirv < .5);
+  return portalType;
   if (portalType == 0 || portalType == 2 || portalType == 3 || portalType == 4 || portalType == 5 || portalType == 8){
     return 0; //6 small types have no lava
   }
@@ -445,7 +526,7 @@ int strongholdSlowCheck(int64_t seed, int fortressQuadrant, LayerStack* gp){
     return 0;
   }
   int shbiome = getBiomeAtPos(gp, best_sh);
-  if (!isOceanic(shbiome)){
+  if (shbiome != deep_ocean && shbiome != deep_warm_ocean && shbiome != deep_lukewarm_ocean && shbiome != deep_cold_ocean && shbiome != deep_frozen_ocean){
     return 0;
   }
   return 1;
@@ -471,9 +552,14 @@ int valid_jungle_not_biome(int64_t lower48){
   return 1;
 }
 
-int portalLoot(int64_t lower48, int px, int pz){
+int portalLoot(int64_t lower48, int px, int pz, int pType){
   //here we GO
   //set decorator seed: worldSeed, portalPosition.getX() << 4, portalPosition.getZ() << 4, 40005
+  int obiT[13] = {2, 4, 4, 3, 5,    1, 1, 3, 2, 7,   5, 5, 5};
+  int obicutoff = 4;
+  if (pType >= 0 && pType <= 12){
+    obicutoff = obiT[pType];
+  }
   int64_t fakeseed = (lower48) ^ 0x5deece66dUL;
   long a = nextLong(&fakeseed) | 1;
   long b = nextLong(&fakeseed) | 1;
@@ -491,6 +577,9 @@ int portalLoot(int64_t lower48, int px, int pz){
   int enti = -1;
   int flintc = 0, obic = 0, ironc = 0, goldc = 0;//counts in nuggets
   int fireb = 0, finishb = 0, lootb = 0;
+  int gaxe = 0;
+  int carrots = 0;
+  int gapple = 0;
   for(ri = 0; ri < num_rolls; ri++){
     rv = nextInt(&cseed, 398);
     //printf("rv: %d\n", rv);
@@ -500,12 +589,20 @@ int portalLoot(int64_t lower48, int px, int pz){
         itemi++;
       }
     }
+    
+    if (itemi == 8){
+      gaxe = 1;
+    }
+
     //printf("I think item %d was itemi %d\n", ri, itemi);
     r_class = table[4*itemi + 1];
     if (r_class == 0){
       i_count = 1;
       if (itemi == 3 || itemi == 4){
         fireb = 1;
+      }
+      if (itemi == 5){
+        gapple += 1;
       }
       continue;
     }
@@ -525,6 +622,9 @@ int portalLoot(int64_t lower48, int px, int pz){
       if (itemi == 6){
         goldc += i_count;
       }
+      if (itemi == 19){
+        carrots += i_count;
+      }
       if (itemi == 21){
         goldc += 9*i_count;
       }
@@ -540,20 +640,24 @@ int portalLoot(int64_t lower48, int px, int pz){
       //printf("e_roll %d\n", e_roll);
       if (e_roll != etable[enti+1] && e_roll != etable[enti+2] && e_roll != etable[enti+3] && e_roll != etable[enti+4]){
         int elevel = nextInt(&cseed, 3) + 1;
-        if (itemi == 7 && enti == 5 && elevel == 3){
+        if (itemi == 7 && e_roll == 5 && elevel >= 2){
           lootb = 1;
         }
       }
     }
   }
   int fitness = 0;
+  int axeeq=gaxe;
+  if (goldc >= 27){
+    axeeq = 1;
+  }
   int ironic = ironc/9;//iron_ingot_count
-  if (ironic % 3 != 0){
+  /*if (ironic % 3 != 0){
     if (fireb == 0 && flintc > 0){
       ironic -= 1;
       fireb = 1; //if you can build a flint and steel and it won't drop you out of bucket/pick range then do it
     }
-  }
+  }*/
   if (fireb > 0){
     fitness += 2;
   }
@@ -562,18 +666,24 @@ int portalLoot(int64_t lower48, int px, int pz){
   }
   if (ironic >= 6){
     fitness += 5;
+    axeeq = 1;
   } else if (ironic >= 3){
     fitness += 3;
+    axeeq = 1;
   } else {
     if (goldc >= 36){
       fitness += 1;
     }
   }
-  if (obic >= 6){
+  if (obic >= 8){
     fitness += 5;
   }
-  if (fitness >= 5){ // around 5 is 3 iron and flint and steel, around 10 is that plus lots of OBI
+  if (lootb > 0 && obic >= obicutoff && fireb > 0 && axeeq > 0 && (carrots > 0 || gapple > 0)){
+    fitness += 100;
+  }
+  if (fitness >= 80){ // around 5 is 3 iron and flint and steel, around 10 is that plus lots of OBI
     //printf("ironc: %d, obic: %d, flintc: %d, fireb: %d, lootb: %d, goldc: %d\n", ironc, obic, flintc, fireb, lootb, goldc);
+    //printf("oc %d/%d\n", obic, obicutoff);
     return 1;
   }    
   return 0;
@@ -590,7 +700,7 @@ int valid_village_and_portal_not_biome(int64_t lower48){
   if (portalTypeNormal(lower48) == 0){ //doing this now biome independent
     return -5;
   }
-  if (portalLoot(lower48, px, pz) == 0){
+  if (portalLoot(lower48, px, pz, -1) == 0){
     return -777;
   }
 
@@ -700,13 +810,33 @@ int portalPreLoot(int64_t seed, int* px, int* pz, int* bigsmall, int* pType){
   return 1;
 }
 
+int valid_structures_and_types2(int64_t lower48, int* fortressQuadrant, int filter_style, int* px2, int* pz2, uint64_t* packedp){
+  if (netherchecker(lower48, fortressQuadrant) == 0){
+    return -1;
+  }
+  if (strongholdAngle(lower48, *fortressQuadrant) == 0){
+    return -2;
+  }
+  if (portalLocation(lower48, 0, px2, pz2) == 0){ //for all future filters
+    return -6;
+  }
+  int portalStyle = portalTypeNormal2(lower48, packedp);
+  if (portalStyle <= 0){ //doing this now biome independent
+    return -5;
+  }
+  if (portalLoot(lower48, *px2, *pz2, portalStyle) == 0){
+    return -777;
+  }
+  return chestys[portalStyle];
+}
+
 int valid_structures_and_types(int64_t lower48, int* fortressQuadrant, int filter_style){
   if (filter_style == 6){
     int px,pz,bigsmall,pType;
     if (portalPreLoot(lower48, &px, &pz, &bigsmall, &pType) == 0){
       return 0;
     }
-    if (portalLoot(lower48, px, pz) == 0){
+    if (portalLoot(lower48, px, pz, -1) == 0){
       return 0;
     }
     return 1;
@@ -721,6 +851,18 @@ int valid_structures_and_types(int64_t lower48, int* fortressQuadrant, int filte
   }
 
   if (filter_style == 0){
+    int px2, pz3;
+    if (portalLocation(lower48, 0, &px2, &pz3) == 0){ //for all future filters
+      return -6;
+    }
+    int portalStyle = portalTypeNormal(lower48);
+    if (portalStyle == -1){ //doing this now biome independent
+      return -5;
+    }
+    if (portalLoot(lower48, px2, pz3, portalStyle) == 0){
+      return -777;
+    }
+   
     return 1; //good nether, good blind, no overworld
   }
 
@@ -741,7 +883,7 @@ int valid_structures_and_types(int64_t lower48, int* fortressQuadrant, int filte
     if (portalTypeNormal(lower48) == 0){ //doing this now biome independent
       return -5;
     }
-    if (portalLoot(lower48, px, pz) == 0){
+    if (portalLoot(lower48, px, pz, -1) == 0){
       return -777;
     }
     return valid_shipwreck_and_ravine_not_biome(lower48);
@@ -753,10 +895,20 @@ int valid_structures_and_types(int64_t lower48, int* fortressQuadrant, int filte
   return 1;
 }
 
+int spawn_close2(int64_t seed, LayerStack* gp, int x, int z){ //costs about 1/6 biomes...
+  int mc = MC_1_16;
+  Pos spawn = getSpawn(mc, gp, NULL, seed);
+  long targetD = l2norm(x, z, spawn.x, spawn.z);
+  if (targetD <= 90*90){
+    return 1;
+  }
+  return 0;
+}
+
 int spawn_close(int64_t seed, LayerStack* gp){ //costs about 1/6 biomes...
   int mc = MC_1_16;
   Pos spawn = getSpawn(mc, gp, NULL, seed);
-  if (spawn.x >= -48 && spawn.x <= 144 && spawn.z >= -48 && spawn.z <= 144){
+  if (spawn.x >= -32 && spawn.x <= 80 && spawn.z >= -32 && spawn.z <= 80){
     return 1;
   }
   return 0;
@@ -780,7 +932,7 @@ int villageBiome(int64_t seed, LayerStack* gp){
     return 0;
   }
   int biome = getBiomeAtPos(gp, p);
-  if (biome == snowy_tundra){
+  if (biome == snowy_tundra || biome == desert){
     return 0;
   }
 
@@ -812,6 +964,22 @@ int jungleBiome(int64_t seed, LayerStack* gp){
   return 1;
 }
 
+int valid_biomes2(int64_t seed, int* fortressQuadrant, int filter_style, LayerStack* gp, int px3, int pz3){
+  applySeed(gp, seed);
+  if (strongholdSlowCheck(seed, *fortressQuadrant, gp) == 0){
+    return -20;
+  }
+  int pbio = portalBiome(seed, gp);
+  if (pbio < 0){
+    return -17;
+  }
+  if (spawn_close2(seed, gp, px3, pz3) == 0){
+    return -11;
+  }
+  //printf("b %d, ", pbio);
+  return pbio; 
+}
+
 int valid_biomes(int64_t seed, int* fortressQuadrant, int filter_style, LayerStack* gp){
   applySeed(gp, seed);
   if (filter_style == 6){
@@ -823,10 +991,17 @@ int valid_biomes(int64_t seed, int* fortressQuadrant, int filter_style, LayerSta
     return -20;
   }
   if (filter_style == 0){
+    if (spawn_close(seed, gp) == 0){
+      return -11;
+    }
+
+    if (portalBiome(seed, gp) < 0){
+      return -17;
+    }
     return 1;
   }
 
-  if (portalBiome(seed, gp)==0){
+  if (portalBiome(seed, gp) < 0){
     return -17;
   }
   if (filter_style == 1){
@@ -861,7 +1036,30 @@ int valid_biomes(int64_t seed, int* fortressQuadrant, int filter_style, LayerSta
   return 1;
 }
 
+int neilrox(long seed, int cx, int cz){
+  char buffer[256];
+  snprintf(buffer, sizeof(buffer), "java -jar new.jar overworld %ld %d %d", seed, cx, cz);
+  int x,y,z;
+  y=-1;
+  FILE *fp = popen(buffer,"r");
+  int retv = fscanf(fp, "%d %d %d", &x, &y, &z);
+  pclose(fp);
+  return y;
+}
+
+int testCrying(int64_t seed, int px, int pz, int chesty, uint64_t packed){
+  //Synthesize call to Neil's chest predictor
+  int cy = neilrox(seed, px>>4, pz>>4);
+  int basey = cy - chesty;
+  return (packed >> (basey - 32)) & 1L;
+}
+
 int main () {
+
+    lookup = (uint64_t*) malloc(sizeof(uint64_t)*13*2*4*10*10);
+    FILE *fpz = fopen("packed.bin","rb");
+    int reszzz = fread(lookup, 83200, 1, fpz);
+    fclose(fpz);
     uint64_t timestamp = (uint64_t) time(NULL);
     FILE *fp = fopen("csprng.c","rb"); //Uses SHA256 of this source code for key
     char source[MAXBUFLEN + 1];
@@ -914,9 +1112,9 @@ int main () {
     uint64_t NONCE = rand64();
     int seedcounter = 0;
     int64ToChar(iniVector, NONCE);
-    int biome_tolerance = 1000;
-    char descriptions[5][65] = {"(RSG overworld)", "(Village Only)", "(Shipwreck Only)", "(Jungle Only)", ""};
-    printf("FSG v1.2 %s\n", descriptions[FILTER_TYPE]);
+    int biome_tolerance = 15000;
+    char descriptions[5][65] = {"(Axe, Looting, Lighter, Obi, Carrots, Housing/Stables, No Crying)", "(Village Only)", "(Shipwreck Only)", "(Jungle Only)", ""};
+    printf("FSG v1.3 %s\n", descriptions[FILTER_TYPE]);
 
     int filterStyle = FILTER_TYPE;
     if (filterStyle == 4){ //Random village or shipwreck (classic)
@@ -929,7 +1127,7 @@ int main () {
       }
     }
     if (filterStyle == 2){
-      biome_tolerance = 10000;
+      biome_tolerance = 3000;
     }
     if (filterStyle == 3){ //jungles
       biome_tolerance = 2000;
@@ -1018,14 +1216,21 @@ int main () {
       seedcounter++;
       seed = charTo64bitNum(encBuffer);
       int result = 0;
+      int px3,pz3;
+      int chesty;
+      uint64_t packed;
       if (has_lower < 1){
         lower48 = seed >> 16;
-        //lower48 = -7385161545945413464LL & 0xFFFFFFFFFFFF;
-        result = valid_structures_and_types(lower48, &fortressQuadrant, filterStyle);
+        result = valid_structures_and_types2(lower48, &fortressQuadrant, filterStyle, &px3, &pz3, &packed);
         if (result > 0){ // && bastionbiome(lower48) == 1){
           //bastion biomes are minorly affected by top 16 but are medium cost:
           has_lower = seedcounter;
           ohcrap = 0;
+          chesty = result;
+          int ti;
+          for (ti = 0; ti < BIOMES+1; ti++){
+            ybybiome[ti] = 0;
+          }
         } else {
           if ((seedcounter - biome_counter) % 1000000 == 0){
             printf(",");
@@ -1036,9 +1241,7 @@ int main () {
         }
       } else {
         upper16 = seed >> 48;
-        //upper16 = -7385161545945413464LL >> 48;
         seed = lower48 | (upper16 << 48);
-//        seed = 7086636929918596711LL;
         biome_counter += 1;
         if (biome_counter % 100 == 0){
           printf(".");
@@ -1047,13 +1250,36 @@ int main () {
         if (bastionbiome(seed) == 0){
           has_lower = 0;
         } else {
-          result = valid_biomes(seed, &fortressQuadrant, filterStyle, &g);
+          result = valid_biomes2(seed, &fortressQuadrant, filterStyle, &g, px3, pz3);
           if (result > 0){
-            printf("\nSeed: %ld\n", seed);
-            printf("Filtered %d seeds did %d biome checks\n", seedcounter, biome_counter);
-            uint64_t timestamp2 = (uint64_t) time(NULL);
-            verification_token(timestamp, VERSION, seedcounter, has_lower, seed, NONCE, timestamp2);
-            is_done = 1;
+            printf("!");
+            fflush(stdout);
+            int checked = 0;
+            if (ybybiome[biomeIndex(result)] == 0){
+              checked = testCrying(seed, px3, pz3, chesty, packed);
+            } else {
+              ybybiome[BIOMES] += 1; //duplicate biomes
+            }
+            if (checked > 0){
+              printf("\nSeed: %ld\n", seed);
+              printf("Filtered %d seeds did %d biome checks\n", seedcounter, biome_counter);
+              uint64_t timestamp2 = (uint64_t) time(NULL);
+              verification_token(timestamp, VERSION, seedcounter, has_lower, seed, NONCE, timestamp2);
+              is_done = 1;
+            } else {
+              ybybiome[biomeIndex(result)] = 1;
+              if (allChecked()){
+                has_lower = 0;
+                ohcrap = 0;
+                printf("*");//crying at all BIOME possible heights
+                fflush(stdout);
+              } else if (ybybiome[BIOMES] >= 8){
+                has_lower = 0;
+                ohcrap = 0;
+                printf("-");//isn't cycling through all biomes
+                fflush(stdout);
+              }
+            }
           } else { //could analyze relative cost of each filter
             ohcrap += 1;
             is_done = 0;
@@ -1067,5 +1293,6 @@ int main () {
         }
       }
     }
+    free(lookup);
     return 0;
 }
