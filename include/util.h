@@ -6,15 +6,19 @@ extern "C"
 {
 #endif
 
-void initBiomeColours(unsigned char biomeColours[256][3]);
-void initBiomeTypeColours(unsigned char biomeColours[256][3]);
+const char* mc2str(int mc);
+int str2mc(const char *s);
+
+const char *biome2str(int id);
+void initBiomeColors(unsigned char biomeColors[256][3]);
+void initBiomeTypeColors(unsigned char biomeColors[256][3]);
 
 int biomesToImage(unsigned char *pixels, 
-        const unsigned char biomeColours[256][3], const int *biomes, 
-        const unsigned int sx, const unsigned int sy, 
+        unsigned char biomeColors[256][3], const int *biomes,
+        const unsigned int sx, const unsigned int sy,
         const unsigned int pixscale, const int flip);
 
-int savePPM(const char* path, const unsigned char *pixels, 
+int savePPM(const char* path, const unsigned char *pixels,
         const unsigned int sx, const unsigned int sy);
 
 #ifdef __cplusplus
